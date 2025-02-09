@@ -1,10 +1,10 @@
 [
     {
         "public_key": "BHEZ9EB7Q5osHNeRzMqXAnB3xMa4gAf5wGvKki8K7vm9",
-        "private_key": "58253e62e3247d767df6ea06c8fa960ad9d6a1585b80d3b5731c70e77027f8c498bd7ceac5f2080b43d8ff937e93b8b2b5c5a9bd03c8fbebc24b7dc02fbe65a4"
+        "private_key": "58253e62e3247d767df6e06c8fa960ad9d6a1585b80d3b5731c70e77027f8c498bd7ceac5f2080b43d8ff937e93b8b2b5c5a9bd03c8fbebc24b7dc02fbe65a4"
     },
     {
         "public_key": "GNc99aLcZYRixXAgcsmoXJ6N5D6pSepSrG3Xa9gLdQgh",
-        "private_key": "465d82e829ed2a297128b7129e6895fc80ff1c99d8d2642c04073cf5ccc7791ae4683bfe93db3c3489b903c18a5a37a2d661a36e91b5e319e3d87a3fa5de5aea"
+        "private_key": "465d82e829ed2a297128b129e6895fc80ff1c99d8d2642c04073cf5ccc7791ae4683bfe93db3c3489b903c18a5a37a2d661a36e91b5e319e3d87a3fa5de5aea"
     }
 ]
