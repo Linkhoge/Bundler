@@ -2,6 +2,7 @@ import json
 import os
 import base64
 import requests
+import time
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 from solana.rpc.types import TokenAccountOpts
@@ -16,6 +17,8 @@ from solders.signature import Signature
 CACHE_FILE = "wallets_cache.json"
 SOLANA_MAINNET = "https://api.mainnet-beta.solana.com"
 JUPITER_API_URL = "https://quote-api.jup.ag/v6"
+
+client = Client(SOLANA_MAINNET)
 
 # Generate a new Solana wallet
 def generate_solana_wallet():
@@ -36,12 +39,45 @@ def load_wallets(filename=CACHE_FILE):
 
 # Fetch token info from Jupiter API
 def fetch_token_info(mint_address, client):
-    url = f"https://api.jup.ag/tokens/v1/token/{mint_address}"
+    url = f"https://api.dexscreener.com/latest/dex/tokens/{mint_address}"
     headers = {'Accept': 'application/json'}
+    
     try:
         response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        
+        data = response.json()
+        
+        # Check if data is not None and is a dictionary
+        if not data or not isinstance(data, dict):
+            print("Invalid or empty response from the API.")
+            return None
+        
+        # Check if 'pairs' key exists and is a non-empty list
+        if 'pairs' not in data or not isinstance(data['pairs'], list) or len(data['pairs']) == 0:
+            print("No token information found in the response.")
+            return None
+        
+        # Extract the first pair in the list
+        pair = data['pairs'][0]
+        
+        # Extract details into a dictionary
+        token_details = {
+            "url": pair.get('url', 'Unknown'),
+            "image_url": pair.get('info', {}).get('imageUrl', 'Unknown'),
+            "header": pair.get('info', {}).get('header', 'Unknown'),  # Extract header
+            "openGraph": pair.get('info', {}).get('openGraph', 'Unknown'),  # Extract openGraph
+            "base_token_name": pair.get('baseToken', {}).get('name', 'Unknown'),
+            "base_token_symbol": pair.get('baseToken', {}).get('symbol', 'Unknown'),
+            "quote_token_symbol": pair.get('quoteToken', {}).get('symbol', 'Unknown'),
+            "price_usd": pair.get('priceUsd', 'Unknown'),
+            "price_native": pair.get('priceNative', 'Unknown'),
+            "volume_24h": pair.get('volume', {}).get('h24', 'Unknown'),
+            "liquidity_usd": pair.get('liquidity', {}).get('usd', 'Unknown'),
+        }
+        
+        return token_details  # Return the extracted information
+
     except requests.exceptions.RequestException as e:
         print(f"Failed to fetch token info: {e}")
         return None
@@ -84,7 +120,6 @@ def execute_swap(quote, wallet_keypair):
         signed_txn = VersionedTransaction.populate(raw_transaction.message, [signature])
 
         # Send the transaction
-        client = Client(SOLANA_MAINNET)
         opts = TxOpts(skip_preflight=False, preflight_commitment=Processed)
         result = client.send_raw_transaction(txn=bytes(signed_txn), opts=opts)
 
@@ -99,53 +134,57 @@ def execute_swap(quote, wallet_keypair):
         return None
     
 def sell_for_sol(token_mint_address, wallet_keypair, slippage_bps=50):
-    client = Client(SOLANA_MAINNET)
-
+    # Fetch token info
     token_info = fetch_token_info(token_mint_address, client)
     if not token_info:
         print("Failed to fetch token info")
         return None
-    
-    decimals = token_info.get("decimals")
-    if decimals is None:
-        print("Token decimals not found.")
-        return None
-    
+
+    # Fetch token balance
     token_balance = get_token_balance(client, str(wallet_keypair.pubkey()), token_mint_address)
     if token_balance is None:
         print("Failed to fetch token balance.")
         return None
-    
-    print(f"\nToken Balance: {token_balance / (10 ** decimals)} {token_info['symbol']}")
+
+    # Calculate the token value in SOL using price_native
+    price_native = float(token_info.get("price_native", 0))
+    if price_native == 0:
+        print("Token price in SOL not found.")
+        return None
+
+    token_value_sol = token_balance * price_native
+    print(f"\nToken Balance: {token_balance} tokens")
+    print(f"Token Value in SOL: {token_value_sol:.6f} SOL")
 
     if token_balance == 0:
         print("You do not own any tokens of this type.")
         return None
-    
+
+    # Define the WSOL mint address
     wsol_mint_address = "So11111111111111111111111111111111111111112"
 
-    # quote = get_swap_quote(token_mint_address, wsol_mint_address, token_balance, slippage_bps)
+    # Fetch the swap quote
     quote = get_swap_quote(token_mint_address, wsol_mint_address, token_balance, slippage_bps)
     if not quote:
         print("Failed to fetch swap quote.")
         return None
     
-    print("\nSwap quote received:")
-    print(f"Input Amount: {quote['inAmount']} units")
-    print(f"Estimated SOL to Receive: {int(quote['outAmount']) / 1e9} SOL")
-
     # Confirm swap
     confirm = input("\nDo you want to proceed with the swap? (Y/N): ").strip().lower()
     if confirm != 'y':
         print("Swap cancelled.")
         return None
-    
-    
+
+    print("\nSwap quote received:")
+    print(f"Input Amount: {quote['inAmount']} units")
+    print(f"Estimated SOL to Receive: {int(quote['outAmount']) / 1e9} SOL")
+
+    # Execute the swap
     swap_result = execute_swap(quote, wallet_keypair)
     if swap_result and "transaction_id" in swap_result:
         print("\nSwap executed successfully!")
         print(f"Transaction ID: {swap_result['transaction_id']}")
-        print(f"Transaction sent: https://explorer.solana.com/tx/{swap_result['transaction_id']}")
+        print(f"Transaction sent: https://solscan.io/tx/{swap_result['transaction_id']}")
         return swap_result
     else:
         print("Swap failed or transaction ID not found.")
@@ -212,7 +251,7 @@ def get_wallet_balance(client, public_key):
     
 def get_token_balance(client, wallet_address, mint_address):
     try:
-
+        time.sleep(1)
         wallet_pubkey = Pubkey.from_string(wallet_address)
         mint_pubkey = Pubkey.from_string(mint_address)
 
@@ -222,17 +261,179 @@ def get_token_balance(client, wallet_address, mint_address):
             token_account_pubkey = token_accounts.value[0].pubkey
 
             balance_response = client.get_token_account_balance(token_account_pubkey)
-            return int(balance_response.value.amount)
+            raw_balance = int(balance_response.value.amount)
+            
+            # Convert raw balance to real value by dividing by 10^6
+            real_balance = raw_balance / 10**6
+            return real_balance
         else:
             print("No token account found for this mint address.")
             return 0
     except Exception as e:
         print(f"Error fetching token balance: {e}")
         return None
-        
+    
+def get_wallet_details(wallet):
+    return {
+        "public_key": wallet["public_key"],
+        "private_key": wallet["private_key"]
+    }
+
+def get_wallet_details_str(wallet):
+    return (
+        f"Wallet details:\n"
+        f"Public Key: {wallet['public_key']}\n"
+        f"Private Key: {wallet['private_key']}\n"
+    )
+
 # Main function
+def get_total_token_balance(client, wallets, contract_address):
+    """
+    Calculate the total token balance across all wallets.
+    """
+    total_balance = 0
+    for wallet in wallets:
+        balance = get_token_balance(client, wallet["public_key"], contract_address)
+        if balance is not None:
+            total_balance += balance
+        else:
+            print(f"Failed to fetch token balance for wallet: {wallet['public_key']}")
+    return total_balance
+
+
+def display_wallet_details(wallets):
+    """
+    Display public and private keys of all wallets.
+    """
+    for wallet in wallets:
+        print("\nWallet details:")
+        print(f"Public Key: {wallet['public_key']}")
+        print(f"Private Key: {wallet['private_key']}")
+
+
+def display_token_info(token_info):
+    """
+    Display token information.
+    """
+    if token_info:
+        print("Token information retrieved successfully:")
+        print(f"URL: {token_info.get('url')}")
+        print(f"Image URL: {token_info.get('image_url')}")
+        print(f"Base Token Name: {token_info.get('base_token_name')}")
+        print(f"Base Token Symbol: {token_info.get('base_token_symbol')}")
+        print(f"Quote Token Symbol: {token_info.get('quote_token_symbol')}")
+        print(f"Price (USD): {token_info.get('price_usd')}")
+        print(f"Price (SOL): {token_info.get('price_native')}")
+        print(f"24h Volume: {token_info.get('volume_24h')}")
+        print(f"Liquidity (USD): {token_info.get('liquidity_usd')}")
+        print(f"Website URL: {token_info.get('website_url')}")
+    else:
+        print("Failed to fetch token info.")
+
+
+def execute_swap_flow(client, wallets, contract_address, sender_keypair):
+    """
+    Handle the swap flow, including fetching quotes, checking balances, and executing swaps.
+    """
+    amount_in_sol = float(input("Enter the amount of SOL to swap: "))
+    sol_mint_address = "So11111111111111111111111111111111111111112"
+    amount_in_units = int(amount_in_sol * (10 ** 9))
+    quote = get_swap_quote(sol_mint_address, contract_address, amount_in_units)
+
+    if quote:
+        print("\nSwap quote received:")
+        print(f"Input Amount: {quote['inAmount']} units")
+        print("Swap quote received:", quote)
+
+        # Check wallet balance
+        wallet_balance = get_wallet_balance(client, wallets[0]["public_key"])
+        if wallet_balance is None:
+            print("Failed to fetch wallet balance.")
+            return
+
+        print(f"Wallet Balance: {wallet_balance} SOL")
+
+        if wallet_balance < amount_in_sol:
+            print("Insufficient SOL balance for the swap.")
+            return
+
+        confirm = input("\nDo you want to proceed with the swap? (Y/N): ").strip().lower()
+        if confirm == 'y':
+            swap_result = execute_swap(quote, sender_keypair)
+            if swap_result and "transaction_id" in swap_result:
+                print("Swap executed successfully! Transaction ID:", swap_result["transaction_id"])
+                print(f"Transaction sent: https://solscan.io/tx/{swap_result['transaction_id']}")
+            else:
+                print("Swap failed or transaction ID not found.")
+        else:
+            print("Swap cancelled.")
+    else:
+        print("Failed to fetch swap quote.")
+
+def get_total_holdings_in_sol(client, wallets, token_mint_address):
+    """
+    Calculate the total holdings of a token across all wallets and return the value in SOL.
+    """
+    total_balance = 0
+    for wallet in wallets:
+        balance = get_token_balance(client, wallet["public_key"], token_mint_address)
+        if balance is not None:
+            total_balance += balance
+        else:
+            print(f"Failed to fetch token balance for wallet: {wallet['public_key']}")
+
+    # Fetch the token price in SOL
+    token_info = fetch_token_info(token_mint_address, client)
+    if not token_info:
+        print("Failed to fetch token info.")
+        return None
+
+    price_native = float(token_info.get("price_native", 0))
+    if price_native == 0:
+        print("Token price in SOL not found.")
+        return None
+
+    # Calculate total holdings in SOL
+    total_holdings_sol = total_balance * price_native
+    return total_holdings_sol
+
+def sell_all_for_sol(token_mint_address, wallets, slippage_bps=50):
+    results = {}
+
+    for wallet in wallets:
+        try:
+            # Extract wallet details
+            public_key = wallet["public_key"]
+            private_key = wallet["private_key"]
+
+            # Create a Keypair object from the private key
+            keypair = Keypair.from_bytes(bytes.fromhex(private_key))
+
+            # Sell the token for SOL
+            print(f"Selling tokens for wallet: {public_key}")
+            result = sell_for_sol(token_mint_address, keypair, slippage_bps)
+
+            if result:
+                results[public_key] = {
+                    "status": "success",
+                    "transaction_id": result.get("transaction_id"),
+                }
+            else:
+                results[public_key] = {
+                    "status": "failed",
+                    "error": "Failed to execute sell_for_sol",
+                }
+
+        except Exception as e:
+            print(f"Error selling tokens for wallet {public_key}: {e}")
+            results[public_key] = {
+                "status": "failed",
+                "error": str(e),
+            }
+
+    return results
+
 def main():
-    client = Client(SOLANA_MAINNET)
 
     # Load wallets from the cache file
     wallets = load_wallets()
@@ -244,85 +445,35 @@ def main():
         print(f"Created {num_wallets} new wallets and saved to cache.")
     else:
         print(f"Loaded {len(wallets)} wallets from cache.")
+        
+        if wallets:
+            # Display wallet details
+            display_wallet_details(wallets)
+            contract_address = input("Enter the contract address (token mint address): ")
+            token_info = fetch_token_info(contract_address, client)
 
-    if wallets:
-        print("\nFirst wallet details:")
-        print(f"Public Key: {wallets[0]['public_key']}")
-        print(f"Private Key: {wallets[0]['private_key']}")
+            # Display token information
+            display_token_info(token_info)
 
-        sender_keypair = Keypair.from_bytes(bytes.fromhex(wallets[0]["private_key"]))
-        # print("Sender Public Key:", sender_keypair.pubkey)
+            # Sell tokens for SOL for each wallet
+            for wallet in wallets:
+                sender_keypair = Keypair.from_bytes(bytes.fromhex(wallet["private_key"]))
+                sell_for_sol(contract_address, sender_keypair)
 
-        # Fetch token info
-        contract_address = input("Enter the contract address (token mint address): ")
-        token_info = fetch_token_info(contract_address, client)
-
-        sell_for_sol(contract_address, sender_keypair)
-
-        if token_info:
-            print("\nToken Information:")
-            print(f"Name: {token_info.get('name')}")
-            print(f"Symbol: ${token_info.get('symbol')}")
-            print(f"Decimals: {token_info.get('decimals')}")
-            print(f"Mint Address: {token_info.get('address')}")
-            print(f"Logo URL: {token_info.get('logoURI')}")
-
-            # Fetch token balance for the wallet
-            token_balance = get_token_balance(client, wallets[0]["public_key"], contract_address)
+            # Get total token balance across all wallets
+            price_native = float(token_info.get('price_native', 0))
             
-            if token_balance is None:
-                print("Failed to fetch token balance.")
+            total_token_balance = get_total_token_balance(client, wallets, contract_address) * price_native
+            if total_token_balance is None:
+                print("Failed to fetch total token balance.")
                 return
-            
-            print(f"\nToken Balance: {token_balance / (10 ** token_info['decimals'])} {token_info['symbol']}")
 
-            if token_balance > 0:
-                # Get the value of the token in SOL and USD
-                token_value = get_token_value(contract_address, token_balance, client)
-                if token_value is not None:
-                    print(f"\nToken Value:")
-                    print(f"Price in SOL: {token_value['token_price_sol']}")
-                else:
-                    print("Failed to fetch token value.")
-            else:
-                print("You do not own any tokens of this type.")
+            print(f"\nTotal Token Balance: {total_token_balance} SOL")
 
-            # Fetch swap quote
-            amount_in_sol = float(input("Enter the amount of SOL to swap: "))
-            sol_mint_address = "So11111111111111111111111111111111111111112"
-            amount_in_units = int(amount_in_sol * (10 ** 9))
-            quote = get_swap_quote(sol_mint_address, contract_address, amount_in_units)
-            if quote:
-                print("\nSwap quote received:")
-                print(f"Input Amount: {quote['inAmount']} units")
-                print("Swap quote received:", quote)
 
-                # Check wallet balance
-                wallet_balance = get_wallet_balance(client, wallets[0]["public_key"])
-                if wallet_balance is None:
-                    print("Failed to fetch wallet balance.")
-                    return
+            # Execute swap flow
+            execute_swap_flow(client, wallets, contract_address, sender_keypair)
 
-                print(f"Wallet Balance: {wallet_balance} SOL")
-
-                if wallet_balance < amount_in_sol:
-                    print("Insufficient SOL balance for the swap.")
-                    return
-
-                confirm = input("\nDo you want to proceed with the swap? (Y/N): ").strip().lower()
-                if confirm == 'y':
-                    swap_result = execute_swap(quote, sender_keypair)
-                    if swap_result and "transaction_id" in swap_result:
-                        print("Swap executed successfully! Transaction ID:", swap_result["transaction_id"])
-                        print(f"Transaction sent: https://explorer.solana.com/tx/{swap_result['transaction_id']}")
-                    else:
-                        print("Swap failed or transaction ID not found.")
-                else:
-                    print("Swap cancelled.")
-            else:
-                print("Failed to fetch swap quote.")
-        else:
-            print("Failed to fetch token info.")
 
 if __name__ == "__main__":
     main()
